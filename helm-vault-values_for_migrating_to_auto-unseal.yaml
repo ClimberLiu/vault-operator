@@ -1,0 +1,67 @@
+global:
+  enabled: true
+  tlsDisable: false
+  extraEnvironmentVars:
+    VAULT_CACERT: /vault/userconfig/vault-server-tls/vault.ca
+
+server:
+  image:
+    repository: 'vault'
+    tag: '1.3.1'
+
+  affinity: |
+    podAntiAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        - labelSelector:
+            matchLabels:
+              app: {{ template "vault.name" . }}
+              release: "{{ .Release.Name }}"
+              component: server
+          topologyKey: kubernetes.io/hostname
+
+  extraVolumes:
+    - type: secret
+      name: vault-server-tls
+    - type: secret
+      name: consul-client-tls
+
+  service:
+    enabled: true
+
+  ha:
+    enabled: true
+    replicas: 2
+
+    config: |
+      ui = true
+
+      listener "tcp" {
+        address = "[::]:8200"
+        cluster_address = "[::]:8201"
+        tls_cert_file = "/vault/userconfig/vault-server-tls/vault.crt"
+        tls_key_file  = "/vault/userconfig/vault-server-tls/vault.key"
+        tls_client_ca_file = "/vault/userconfig/vault-server-tls/vault.ca"
+      }
+
+      storage "consul" {
+        path = "vault"
+        address = "HOST_IP:8501"
+        scheme = "https"
+        token = "<CONSUL_ACL_TOKEN>"
+        tls_ca_file = "/vault/userconfig/consul-client-tls/ca_file.crt"
+        tls_cert_file = "/vault/userconfig/consul-client-tls/cert_file.crt"
+        tls_key_file = "/vault/userconfig/consul-client-tls/key_file.key"
+      }
+
+      seal "transit" {
+        address = "http://<VAULT_FOR_AUTOUNSEAL_SERVICE_IP>:8200"
+        token = "<CLIENT_TOKEN>"
+        disable_renewal = "false"
+        key_name = "autounseal"
+        mount_path = "transit/"
+        tls_skip_verify = "true"
+      }
+
+ui:
+  enabled: true
+  serviceType: LoadBalancer
