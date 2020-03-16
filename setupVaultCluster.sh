@@ -72,7 +72,6 @@ check_vault_namespace()
 create_k8s_secret_for_vault_tls()
 {
     # Create and Store key, cert and kubernetes CA in kubernetes secrets store for Vault cluster with TLS
-    SERVICE=vault
     SECRET_NAME=vault-server-tls
     TMPDIR=/tmp
 
