@@ -208,10 +208,8 @@ create_admin_and_provisioner_token()
     idl_vault_crud_policy_name="idl-vault-secrets-crud"
     default_max_ttl_vault_config="8760h"
     idl_vault_admin_token_json=/tmp/idl_vault_admin_token_$$.json
-    curl ${IDL_VAULT_ADMIN_HCL_URL} --output /tmp/${idl_vault_admin_policy_name}.hcl
-    curl ${IDL_VAULT_SECRETS_CRUD_HCL_URL} --output /tmp/${idl_vault_crud_policy_name}.hcl
-    kubectl cp -n ${VAULT_NS} /tmp/${idl_vault_admin_policy_name}.hcl ${vault_server}:/tmp/${idl_vault_admin_policy_name}.hcl
-    kubectl cp -n ${VAULT_NS} /tmp/${idl_vault_crud_policy_name}.hcl ${vault_server}:/tmp/${idl_vault_crud_policy_name}.hcl
+    kubectl cp -n ${VAULT_NS} ${idl_vault_admin_policy_name}.hcl ${vault_server}:/tmp/${idl_vault_admin_policy_name}.hcl
+    kubectl cp -n ${VAULT_NS} ${idl_vault_crud_policy_name}.hcl ${vault_server}:/tmp/${idl_vault_crud_policy_name}.hcl
     kubectl exec -n ${VAULT_NS} ${vault_server} -- sh -c "export VAULT_CACERT=/vault/userconfig/vault-server-tls/vault.ca VAULT_TOKEN=${root_token}; vault policy write ${idl_vault_admin_policy_name} /tmp/${idl_vault_admin_policy_name}.hcl; vault policy write ${idl_vault_crud_policy_name} /tmp/${idl_vault_crud_policy_name}.hcl"
     kubectl exec -n ${VAULT_NS} ${vault_server} -- sh -c "export VAULT_CACERT=/vault/userconfig/vault-server-tls/vault.ca VAULT_TOKEN=${root_token}; vault token create -policy=${idl_vault_admin_policy_name} -period=${default_max_ttl_vault_config} -format=json 2> /dev/null" > ${idl_vault_admin_token_json}
     idl_vault_admin_token=$(jq '.auth.client_token' ${idl_vault_admin_token_json} | tr -d \")
@@ -239,8 +237,6 @@ INIT_TOKEN_FILE=/tmp/init_token_$$.json
 VAULT_VALUES_FILE=helm-vault-values.yaml
 VAULT_HELM_GITURL=https://github.com/hashicorp/vault-helm.git
 VAULT_HELM_VER=v0.3.3
-IDL_VAULT_ADMIN_HCL_URL=https://github.wdf.sap.corp/raw/I502944/hashicorp-vault/master/config/idl-vault-admin.hcl
-IDL_VAULT_SECRETS_CRUD_HCL_URL=https://github.wdf.sap.corp/raw/I502944/hashicorp-vault/master/config/idl-vault-secrets-crud.hcl
 SPANETCA_CERT_URL=http://aia.pki.co.sap.com/aia/SAPNetCA_G2.crt
 while getopts :n:r: opt
 do
