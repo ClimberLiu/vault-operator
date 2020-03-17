@@ -75,7 +75,7 @@ create_k8s_secret_for_vault_tls()
     SECRET_NAME=vault-server-tls
     TMPDIR=/tmp
 
-    wildcard_sect=$(kubectl get secret -n ${VAULT_NS} -o name | grep wildcard.${VAULT_NS})
+    wildcard_sect=$(kubectl get secret -n ${VAULT_NS} -o name | grep wildcard | grep -v wildcard.${VAULT_NS})
     kubectl get ${wildcard_sect} -n ${VAULT_NS} -o jsonpath='{.data.tls\.key}' | base64 -d > ${TMPDIR}/vault.key
     kubectl get ${wildcard_sect} -n ${VAULT_NS} -o jsonpath='{.data.tls\.crt}' | base64 -d > ${TMPDIR}/vault.crt
     curl ${SPANETCA_CERT_URL} --output ${TMPDIR}/vault.ca
@@ -109,6 +109,13 @@ generate_consul_acl_token_for_vault()
         sed "s/<CONSUL_ACL_TOKEN>/${token}/" ${VAULT_VALUES_FILE} > ${VAULT_VALUES_FILE}.$$
     fi
 
+}
+
+update_vault_services_annotations()
+{
+    dns_suffix=$(kubectl get secret -n ${VAULT_NS} -o name | grep wildcard.${VAULT_NS} | sed "s#secret/wildcard.${VAULT_NS}##")
+    sed -i "s/<VAULT_DNS>/vault.${dns_suffix}/" ${VAULT_VALUES_FILE}.$$
+    sed -i "s/<VAULT_UI_DNS>/vault-ui.${dns_suffix}/" ${VAULT_VALUES_FILE}.$$
 }
 
 install_vault_helm_chart()
@@ -256,6 +263,7 @@ check_vault_namespace
 create_k8s_secret_for_consul_storage_tls
 create_k8s_secret_for_vault_tls
 generate_consul_acl_token_for_vault
+update_vault_services_annotations
 install_vault_helm_chart
 unseal_vault_cluster
 create_admin_and_provisioner_token

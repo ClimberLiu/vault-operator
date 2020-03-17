@@ -27,6 +27,11 @@ server:
 
   service:
     enabled: true
+    type: LoadBalancer
+    annotations:
+      dns.gardener.cloud/class: garden
+      dns.gardener.cloud/dnsnames: <VAULT_DNS>
+      dns.gardener.cloud/ttl: "600"
 
   ha:
     enabled: true
@@ -56,3 +61,7 @@ server:
 ui:
   enabled: true
   serviceType: LoadBalancer
+  annotations:
+    dns.gardener.cloud/class: garden
+    dns.gardener.cloud/dnsnames: <VAULT_UI_DNS>
+    dns.gardener.cloud/ttl: "600"
