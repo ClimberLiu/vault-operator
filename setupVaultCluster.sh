@@ -79,7 +79,7 @@ create_k8s_secret_for_vault_tls()
     kubectl get ${wildcard_sect} -n ${VAULT_NS} -o jsonpath='{.data.tls\.key}' | base64 -d > ${TMPDIR}/vault.key
     kubectl get ${wildcard_sect} -n ${VAULT_NS} -o jsonpath='{.data.tls\.crt}' | base64 -d > ${TMPDIR}/vault.crt
     curl ${SPANETCA_CERT_URL} --output ${TMPDIR}/vault.ca
-    echo "===>Store the key, cert, and Kubernetes CA into Kubernetes secret ${SECRET_NAME}."
+    echo "===>Store the key, cert, and SAPNet_CA into Kubernetes secret ${SECRET_NAME}."
     kubectl create secret generic ${SECRET_NAME} --namespace ${VAULT_NS} --from-file=vault.key=${TMPDIR}/vault.key \
         --from-file=vault.crt=${TMPDIR}/vault.crt --from-file=vault.ca=${TMPDIR}/vault.ca
 }
@@ -106,7 +106,7 @@ generate_consul_acl_token_for_vault()
         echo "Failed to create consul ACL token for vault! Exit..."
         exit 1
     else
-        sed "s/<CONSUL_ACL_TOKEN>/${token}/" ${VAULT_VALUES_FILE} > ${VAULT_VALUES_FILE}.$$
+        sed "s/<CONSUL_ACL_TOKEN>/${token}/" ${VAULT_VALUES_FILE} > /tmp/${VAULT_VALUES_FILE}.$$
     fi
 
 }
@@ -114,8 +114,7 @@ generate_consul_acl_token_for_vault()
 update_vault_services_annotations()
 {
     dns_suffix=$(kubectl get secret -n ${VAULT_NS} -o name | grep wildcard.${VAULT_NS} | sed "s#secret/wildcard.${VAULT_NS}##")
-    sed -i "s/<VAULT_DNS>/vault.${dns_suffix}/" ${VAULT_VALUES_FILE}.$$
-    sed -i "s/<VAULT_UI_DNS>/vault-ui.${dns_suffix}/" ${VAULT_VALUES_FILE}.$$
+    sed -i.bak "s#<VAULT_DNS>#vault.${dns_suffix}#; s#<VAULT_UI_DNS>#vault-ui.${dns_suffix}#" /tmp/${VAULT_VALUES_FILE}.$$ && rm /tmp/${VAULT_VALUES_FILE}.$$.bak
 }
 
 install_vault_helm_chart()
@@ -135,7 +134,7 @@ install_vault_helm_chart()
     then
         echo "===>Install vault helm chart in namespace ${VAULT_NS}"
         echo "====================================================="
-        helm install -f ${VAULT_VALUES_FILE}.$$ ${VAULT_RELEASE} ../vault-helm -n ${VAULT_NS}
+        helm install -f /tmp/${VAULT_VALUES_FILE}.$$ ${VAULT_RELEASE} ../vault-helm -n ${VAULT_NS}
         echo "====================================================="
     else
         echo "!!!The vault-helm chart is not exist in current dir ${parent_dir}"
@@ -195,9 +194,9 @@ create_admin_and_provisioner_token()
     provisioner_token_json=/tmp/vault_provisioner_token_$$.json
     kubectl cp -n ${VAULT_NS} admin-policy.hcl ${vault_server}:/tmp/admin-policy.hcl
     kubectl cp -n ${VAULT_NS} provisioner-policy.hcl ${vault_server}:/tmp/provisioner-policy.hcl
-    kubectl exec -n ${VAULT_NS} ${vault_server} -- sh -c "export VAULT_CACERT=/vault/userconfig/vault-server-tls/vault.ca VAULT_TOKEN=${root_token}; vault policy write admin /tmp/admin-policy.hcl; vault policy write provisioner /tmp/provisioner-policy.hcl"
-    kubectl exec -n ${VAULT_NS} ${vault_server} -- sh -c "export VAULT_CACERT=/vault/userconfig/vault-server-tls/vault.ca VAULT_TOKEN=${root_token}; vault token create -policy=admin -format=json 2> /dev/null" > ${admin_token_json}
-    kubectl exec -n ${VAULT_NS} ${vault_server} -- sh -c "export VAULT_CACERT=/vault/userconfig/vault-server-tls/vault.ca VAULT_TOKEN=${root_token}; vault token create -policy=provisioner -format=json 2> /dev/null" > ${provisioner_token_json}
+    kubectl exec -n ${VAULT_NS} ${vault_server} -- sh -c "export VAULT_TOKEN=${root_token}; vault policy write -tls-skip-verify admin /tmp/admin-policy.hcl; vault policy write -tls-skip-verify provisioner /tmp/provisioner-policy.hcl"
+    kubectl exec -n ${VAULT_NS} ${vault_server} -- sh -c "export VAULT_TOKEN=${root_token}; vault token create -tls-skip-verify -policy=admin -format=json 2> /dev/null" > ${admin_token_json}
+    kubectl exec -n ${VAULT_NS} ${vault_server} -- sh -c "export VAULT_TOKEN=${root_token}; vault token create -tls-skip-verify -policy=provisioner -format=json 2> /dev/null" > ${provisioner_token_json}
     admin_token=$(jq '.auth.client_token' ${admin_token_json} | tr -d \")
     provisioner_token=$(jq '.auth.client_token' ${provisioner_token_json} | tr -d \")
     kubectl create secret generic vault-admin-token --from-literal=token=${admin_token} -n ${VAULT_NS}
@@ -210,23 +209,21 @@ create_admin_and_provisioner_token()
     idl_vault_admin_token_json=/tmp/idl_vault_admin_token_$$.json
     kubectl cp -n ${VAULT_NS} ${idl_vault_admin_policy_name}.hcl ${vault_server}:/tmp/${idl_vault_admin_policy_name}.hcl
     kubectl cp -n ${VAULT_NS} ${idl_vault_crud_policy_name}.hcl ${vault_server}:/tmp/${idl_vault_crud_policy_name}.hcl
-    kubectl exec -n ${VAULT_NS} ${vault_server} -- sh -c "export VAULT_CACERT=/vault/userconfig/vault-server-tls/vault.ca VAULT_TOKEN=${root_token}; vault policy write ${idl_vault_admin_policy_name} /tmp/${idl_vault_admin_policy_name}.hcl; vault policy write ${idl_vault_crud_policy_name} /tmp/${idl_vault_crud_policy_name}.hcl"
-    kubectl exec -n ${VAULT_NS} ${vault_server} -- sh -c "export VAULT_CACERT=/vault/userconfig/vault-server-tls/vault.ca VAULT_TOKEN=${root_token}; vault token create -policy=${idl_vault_admin_policy_name} -period=${default_max_ttl_vault_config} -format=json 2> /dev/null" > ${idl_vault_admin_token_json}
+    kubectl exec -n ${VAULT_NS} ${vault_server} -- sh -c "export VAULT_TOKEN=${root_token}; vault policy write -tls-skip-verify ${idl_vault_admin_policy_name} /tmp/${idl_vault_admin_policy_name}.hcl; vault policy write -tls-skip-verify ${idl_vault_crud_policy_name} /tmp/${idl_vault_crud_policy_name}.hcl"
+    kubectl exec -n ${VAULT_NS} ${vault_server} -- sh -c "export VAULT_TOKEN=${root_token}; vault token create -tls-skip-verify -policy=${idl_vault_admin_policy_name} -period=${default_max_ttl_vault_config} -format=json 2> /dev/null" > ${idl_vault_admin_token_json}
     idl_vault_admin_token=$(jq '.auth.client_token' ${idl_vault_admin_token_json} | tr -d \")
     kubectl create secret generic idl-vault-admin-token --from-literal=token=${idl_vault_admin_token} -n ${VAULT_NS}
-    kubectl exec -n ${VAULT_NS} ${vault_server} -- sh -c "export VAULT_CACERT=/vault/userconfig/vault-server-tls/vault.ca VAULT_TOKEN=${root_token}; vault secrets enable -path=secret kv-v2"
+    kubectl exec -n ${VAULT_NS} ${vault_server} -- sh -c "export VAULT_TOKEN=${root_token}; vault secrets enable -tls-skip-verify -path=secret kv-v2"
 }
 
 cleanup()
 {
     rm -f ${TMPDIR}/ca_file.crt ${TMPDIR}/cert_file.crt ${TMPDIR}/key_file.key
-    rm -f ${TMPDIR}/csr.conf
     rm -f ${TMPDIR}/vault.key ${TMPDIR}/vault.crt ${TMPDIR}/vault.ca
-    rm -f ${TMPDIR}/csr.yaml
-    rm -f ${TMPDIR}/server.csr
-    rm -f /tmp/${idl_vault_admin_policy_name}.hcl
-    rm -f /tmp/${idl_vault_crud_policy_name}.hcl
+    rm -f ${TMPDIR}/server.csr ${TMPDIR}/csr.conf ${TMPDIR}/csr.yaml
+    rm -f /tmp/${VAULT_VALUES_FILE}.$$
     rm -f ${INIT_TOKEN_FILE}
+    rm -f /tmp/vault_admin_token_$$.json /tmp/vault_provisioner_token_$$.json /tmp/idl_vault_admin_token_$$.json
 }
 
 CONSUL_NS=consul
