@@ -37,11 +37,19 @@ create_k8s_secret_for_consul_storage_tls()
     CONSUL_CLIENT=$(kubectl get pods -n ${CONSUL_NS} -l release=${CONSUL_RELEASE},component=client --field-selector status.phase=Running -o jsonpath='{.items[0].metadata.name}')
     if [[ ${CONSUL_CLIENT} != "" ]]
     then
-        echo "===>Get the ca, cert and key files from consul client pods."
-        kubectl cp -n ${CONSUL_NS} ${CONSUL_CLIENT}:/consul/tls/ca/..data/tls.crt ${TMPDIR}/ca_file.crt &> /dev/null
-        kubectl cp -n ${CONSUL_NS} ${CONSUL_CLIENT}:/consul/tls/client/tls.crt ${TMPDIR}/cert_file.crt &> /dev/null
-        kubectl cp -n ${CONSUL_NS} ${CONSUL_CLIENT}:/consul/tls/client/tls.key ${TMPDIR}/key_file.key &> /dev/null
-
+        if [[ ${ENVIRONMENT} = "ENG" ]]
+        then
+            echo "===>Get the ca, cert and key files from consul client pods."
+            kubectl cp -n ${CONSUL_NS} ${CONSUL_CLIENT}:/consul/tls/ca/..data/tls.crt ${TMPDIR}/ca_file.crt &> /dev/null
+            kubectl cp -n ${CONSUL_NS} ${CONSUL_CLIENT}:/consul/tls/client/tls.crt ${TMPDIR}/cert_file.crt &> /dev/null
+            kubectl cp -n ${CONSUL_NS} ${CONSUL_CLIENT}:/consul/tls/client/tls.key ${TMPDIR}/key_file.key &> /dev/null
+        else
+            echo "===>Get the ca, cert and key files from consul agent ca cert secret in consul's namespace."
+            secret_name=$(kubectl get secret -n ${CONSUL_NS} -o name | grep consul-agent-ca-cert)
+            kubectl get ${secret_name} -n ${CONSUL_NS} -o jsonpath='{.data.ca_file}' | base64 -d > ${TMPDIR}/ca_file.crt
+            kubectl get ${secret_name} -n ${CONSUL_NS} -o jsonpath='{.data.cert_file}' | base64 -d > ${TMPDIR}/cert_file.crt
+            kubectl get ${secret_name} -n ${CONSUL_NS} -o jsonpath='{.data.key_file}' | base64 -d > ${TMPDIR}/key_file.key
+        fi
         if [[ -f ${TMPDIR}/ca_file.crt && -f ${TMPDIR}/cert_file.crt && -f ${TMPDIR}/key_file.key ]]
         then
             echo "===>Store the ca, cert and key in kubernetes secrects store."
@@ -91,7 +99,7 @@ generate_consul_acl_token_for_vault()
     consul_server_pod=$(kubectl get pods -n ${CONSUL_NS} -l release=${CONSUL_RELEASE},component=server --field-selector status.phase=Running -o jsonpath='{.items[0].metadata.name}')
 
     echo "===>Create the acl policy for vault in consul server pod ${consul_server_pod}"
-    kubectl cp -n ${CONSUL_NS} vault-acl-policy.hcl ${consul_server_pod}:/tmp/vault-acl-policy.hcl
+    kubectl cp -n ${CONSUL_NS} templates/vault-acl-policy.hcl ${consul_server_pod}:/tmp/vault-acl-policy.hcl
     kubectl exec ${consul_server_pod} -n ${CONSUL_NS} -- sh -c "export CONSUL_HTTP_TOKEN=${bootstrap_token}; consul acl policy create -name vault-acl -rules @/tmp/vault-acl-policy.hcl"
 
     echo "===>Create the token with the policy created above for vault."
@@ -192,8 +200,8 @@ create_admin_and_provisioner_token()
     root_token=$(jq ".root_token" ${INIT_TOKEN_FILE} | tr -d  \")
     admin_token_json=/tmp/vault_admin_token_$$.json
     provisioner_token_json=/tmp/vault_provisioner_token_$$.json
-    kubectl cp -n ${VAULT_NS} admin-policy.hcl ${vault_server}:/tmp/admin-policy.hcl
-    kubectl cp -n ${VAULT_NS} provisioner-policy.hcl ${vault_server}:/tmp/provisioner-policy.hcl
+    kubectl cp -n ${VAULT_NS} templates/admin-policy.hcl ${vault_server}:/tmp/admin-policy.hcl
+    kubectl cp -n ${VAULT_NS} templates/provisioner-policy.hcl ${vault_server}:/tmp/provisioner-policy.hcl
     kubectl exec -n ${VAULT_NS} ${vault_server} -- sh -c "export VAULT_TOKEN=${root_token}; vault policy write -tls-skip-verify admin /tmp/admin-policy.hcl; vault policy write -tls-skip-verify provisioner /tmp/provisioner-policy.hcl"
     kubectl exec -n ${VAULT_NS} ${vault_server} -- sh -c "export VAULT_TOKEN=${root_token}; vault token create -tls-skip-verify -policy=admin -format=json 2> /dev/null" > ${admin_token_json}
     kubectl exec -n ${VAULT_NS} ${vault_server} -- sh -c "export VAULT_TOKEN=${root_token}; vault token create -tls-skip-verify -policy=provisioner -format=json 2> /dev/null" > ${provisioner_token_json}
@@ -207,8 +215,8 @@ create_admin_and_provisioner_token()
     idl_vault_crud_policy_name="idl-vault-secrets-crud"
     default_max_ttl_vault_config="8760h"
     idl_vault_admin_token_json=/tmp/idl_vault_admin_token_$$.json
-    kubectl cp -n ${VAULT_NS} ${idl_vault_admin_policy_name}.hcl ${vault_server}:/tmp/${idl_vault_admin_policy_name}.hcl
-    kubectl cp -n ${VAULT_NS} ${idl_vault_crud_policy_name}.hcl ${vault_server}:/tmp/${idl_vault_crud_policy_name}.hcl
+    kubectl cp -n ${VAULT_NS} templates/${idl_vault_admin_policy_name}.hcl ${vault_server}:/tmp/${idl_vault_admin_policy_name}.hcl
+    kubectl cp -n ${VAULT_NS} templates/${idl_vault_crud_policy_name}.hcl ${vault_server}:/tmp/${idl_vault_crud_policy_name}.hcl
     kubectl exec -n ${VAULT_NS} ${vault_server} -- sh -c "export VAULT_TOKEN=${root_token}; vault policy write -tls-skip-verify ${idl_vault_admin_policy_name} /tmp/${idl_vault_admin_policy_name}.hcl; vault policy write -tls-skip-verify ${idl_vault_crud_policy_name} /tmp/${idl_vault_crud_policy_name}.hcl"
     kubectl exec -n ${VAULT_NS} ${vault_server} -- sh -c "export VAULT_TOKEN=${root_token}; vault token create -tls-skip-verify -policy=${idl_vault_admin_policy_name} -period=${default_max_ttl_vault_config} -format=json 2> /dev/null" > ${idl_vault_admin_token_json}
     idl_vault_admin_token=$(jq '.auth.client_token' ${idl_vault_admin_token_json} | tr -d \")
@@ -231,7 +239,6 @@ CONSUL_RELEASE=consul
 VAULT_NS=vault
 VAULT_RELEASE=vault
 INIT_TOKEN_FILE=/tmp/init_token_$$.json
-VAULT_VALUES_FILE=helm-vault-values.yaml
 VAULT_HELM_GITURL=https://github.com/hashicorp/vault-helm.git
 VAULT_HELM_VER=v0.3.3
 SPANETCA_CERT_URL=http://aia.pki.co.sap.com/aia/SAPNetCA_G2.crt
@@ -243,6 +250,19 @@ do
             ;;
         r)
             CONSUL_RELEASE=$OPTARG
+            ;;
+        e)
+            ENVIRONMENT=${OPTARG^^}
+            if [[ ${ENVIRONMENT} = "ENG" ]]
+            then
+                VAULT_VALUES_FILE=templates/helm-vault-values-eng.yaml
+            elif [[ ${ENVIRONMENT} = "QA" || ${ENVIRONMENT} = "PREVIEW" || ${ENVIRONMENT} = "PROD" ]]
+            then
+                VAULT_VALUES_FILE=templates/helm-vault-values.yaml
+            else
+                echo "Invalid argument for option -e: $OPTARG"
+                exit 2
+            fi
             ;;
         ?)
             echo "Invalid option: -$OPTARG"
