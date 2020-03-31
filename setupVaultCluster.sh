@@ -34,7 +34,7 @@ create_k8s_secret_for_consul_storage_tls()
 {
     # From consul client pods, get the ca, cert and key files and store them in kubernetes secrects store for the Vault's consul storage TLS-related config
     TMPDIR=/tmp
-    CONSUL_CLIENT=$(kubectl get pods -n ${CONSUL_NS} -l release=${CONSUL_RELEASE},component=client --field-selector status.phase=Running -o jsonpath='{.items[0].metadata.name}')
+    CONSUL_CLIENT=$(kubectl get pods -n ${CONSUL_NS} -l 'release in (consulcks-agent, consul),component=client' --field-selector status.phase=Running -o jsonpath='{.items[0].metadata.name}')
     if [[ ${CONSUL_CLIENT} != "" ]]
     then
         if [[ ${ENVIRONMENT} = "ENG" ]]
@@ -96,7 +96,7 @@ generate_consul_acl_token_for_vault()
 {
     echo "===>Get the consul's bootstrap token from k8s"
     bootstrap_token=$(kubectl get secret ${CONSUL_RELEASE}-consul-bootstrap-acl-token -n ${CONSUL_NS} -o jsonpath='{.data.token}' | base64 -d)
-    consul_server_pod=$(kubectl get pods -n ${CONSUL_NS} -l release=${CONSUL_RELEASE},component=server --field-selector status.phase=Running -o jsonpath='{.items[0].metadata.name}')
+    consul_server_pod=$(kubectl get pods -n ${CONSUL_NS} -l 'release in (consulcks-agent, consul),component=server' --field-selector status.phase=Running -o jsonpath='{.items[0].metadata.name}')
 
     echo "===>Create the acl policy for vault in consul server pod ${consul_server_pod}"
     kubectl cp -n ${CONSUL_NS} templates/vault-acl-policy.hcl ${consul_server_pod}:/tmp/vault-acl-policy.hcl
@@ -117,6 +117,18 @@ generate_consul_acl_token_for_vault()
         sed "s/<CONSUL_ACL_TOKEN>/${token}/" ${VAULT_VALUES_FILE} > /tmp/${VAULT_VALUES_FILE}.$$
     fi
 
+}
+
+get_consul_acl_token_from_azure_keyvault()
+{
+    tenant_id=$(echo NDJmNzY3NmMtZjQ1NS00MjNjLTgyZjYtZGMyZDk5NzkxYWY3Cg== | base64 -d)
+    client_sec=$(echo cG1ISWZTbURqYUs4bXNXUWNjbGRpazBGMHpsSHVkTU9qRlZlbjg4TU9jYz0K | base64 -d)
+    client_id=$(echo MGZlMTkzZWEtNzZmZS00ZTlmLWI3N2MtNGJhNTlmY2M1OTM4Cg== | base64 -d)
+    secret_name=$1
+    bearer_token=$(curl -X POST https://login.microsoftonline.com/${tenant_id}/oauth2/token -d "grant_type=client_credentials&client_id=${client_id}&client_secret=${client_sec}&resource=https://vault.azure.net" --insecure | jq '.access_token' | tr -d \")
+    secret_version=$(curl -X GET "https://consulopensslvault.vault.azure.net/secrets/${secret_name}/versions?maxresults=1&api-version=7.0" -H "Authorization: Bearer ${bearer_token}" -H 'Content-Type: application/json' --insecure | jq '.value[0].id' | tr -d \")
+    token=$(curl -X GET "${secret_version}?api-version=7.0" -H "Authorization: Bearer ${bearer_token}" -H 'Content-Type: application/json' --insecure | jq '.value' | tr -d \")
+    sed "s/<CONSUL_ACL_TOKEN>/${token}/" ${VAULT_VALUES_FILE} > /tmp/${VAULT_VALUES_FILE}.$$
 }
 
 update_vault_services_annotations()
@@ -239,10 +251,11 @@ CONSUL_RELEASE=consul
 VAULT_NS=vault
 VAULT_RELEASE=vault
 INIT_TOKEN_FILE=/tmp/init_token_$$.json
+DC=""
 VAULT_HELM_GITURL=https://github.com/hashicorp/vault-helm.git
 VAULT_HELM_VER=v0.3.3
 SPANETCA_CERT_URL=http://aia.pki.co.sap.com/aia/SAPNetCA_G2.crt
-while getopts :n:r: opt
+while getopts :n:r:d:e: opt
 do
     case "$opt" in
         n)
@@ -251,8 +264,16 @@ do
         r)
             CONSUL_RELEASE=$OPTARG
             ;;
+        d)
+            DC=$(echo ${OPTARG} | tr a-z A-Z)
+            if [[ ! ${DC} =~ ^DC[0-9]{1,3}$ ]]
+            then
+                echo "Invalid value for option -d, please pass the value with format, such as dc8, dc47."
+                exit 2
+            fi
+            ;;
         e)
-            ENVIRONMENT=${OPTARG^^}
+            ENVIRONMENT=$(echo ${OPTARG} | tr a-z A-Z)
             if [[ ${ENVIRONMENT} = "ENG" ]]
             then
                 VAULT_VALUES_FILE=templates/helm-vault-values-eng.yaml
@@ -272,10 +293,16 @@ do
 done
 
 check_consul_setup
-check_vault_namespace
+#check_vault_namespace
 create_k8s_secret_for_consul_storage_tls
 create_k8s_secret_for_vault_tls
-generate_consul_acl_token_for_vault
+if [[ ${ENVIRONMENT} = "ENG" ]]
+then
+    generate_consul_acl_token_for_vault
+else
+    get_consul_acl_token_from_azure_keyvault ${DC}"-write-acl-token"
+
+fi
 update_vault_services_annotations
 install_vault_helm_chart
 unseal_vault_cluster
