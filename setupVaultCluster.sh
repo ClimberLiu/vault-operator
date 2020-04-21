@@ -34,14 +34,22 @@ create_k8s_secret_for_consul_storage_tls()
 {
     # From consul client pods, get the ca, cert and key files and store them in kubernetes secrects store for the Vault's consul storage TLS-related config
     TMPDIR=/tmp
-    CONSUL_CLIENT=$(kubectl get pods -n ${CONSUL_NS} -l release=${CONSUL_RELEASE},component=client --field-selector status.phase=Running -o jsonpath='{.items[0].metadata.name}')
+    CONSUL_CLIENT=$(kubectl get pods -n ${CONSUL_NS} -l 'release in (consulcks-agent, consul),component=client' --field-selector status.phase=Running -o jsonpath='{.items[0].metadata.name}')
     if [[ ${CONSUL_CLIENT} != "" ]]
     then
-        echo "===>Get the ca, cert and key files from consul client pods."
-        kubectl cp -n ${CONSUL_NS} ${CONSUL_CLIENT}:/consul/tls/ca/..data/tls.crt ${TMPDIR}/ca_file.crt &> /dev/null
-        kubectl cp -n ${CONSUL_NS} ${CONSUL_CLIENT}:/consul/tls/client/tls.crt ${TMPDIR}/cert_file.crt &> /dev/null
-        kubectl cp -n ${CONSUL_NS} ${CONSUL_CLIENT}:/consul/tls/client/tls.key ${TMPDIR}/key_file.key &> /dev/null
-
+        if [[ ${ENVIRONMENT} = "ENG" ]]
+        then
+            echo "===>Get the ca, cert and key files from consul client pods."
+            kubectl cp -n ${CONSUL_NS} ${CONSUL_CLIENT}:/consul/tls/ca/..data/tls.crt ${TMPDIR}/ca_file.crt &> /dev/null
+            kubectl cp -n ${CONSUL_NS} ${CONSUL_CLIENT}:/consul/tls/client/tls.crt ${TMPDIR}/cert_file.crt &> /dev/null
+            kubectl cp -n ${CONSUL_NS} ${CONSUL_CLIENT}:/consul/tls/client/tls.key ${TMPDIR}/key_file.key &> /dev/null
+        else
+            echo "===>Get the ca, cert and key files from consul agent ca cert secret in consul's namespace."
+            secret_name=$(kubectl get secret -n ${CONSUL_NS} -o name | grep consul-agent-ca-cert)
+            kubectl get ${secret_name} -n ${CONSUL_NS} -o jsonpath='{.data.ca_file}' | base64 -d > ${TMPDIR}/ca_file.crt
+            kubectl get ${secret_name} -n ${CONSUL_NS} -o jsonpath='{.data.cert_file}' | base64 -d > ${TMPDIR}/cert_file.crt
+            kubectl get ${secret_name} -n ${CONSUL_NS} -o jsonpath='{.data.key_file}' | base64 -d > ${TMPDIR}/key_file.key
+        fi
         if [[ -f ${TMPDIR}/ca_file.crt && -f ${TMPDIR}/cert_file.crt && -f ${TMPDIR}/key_file.key ]]
         then
             echo "===>Store the ca, cert and key in kubernetes secrects store."
@@ -75,10 +83,56 @@ create_k8s_secret_for_vault_tls()
     SECRET_NAME=vault-server-tls
     TMPDIR=/tmp
 
+    # for the ENG env, use the wildcard tls secrets created during the namespace creation by the jenkins job generic-k8s-environment-create
     wildcard_sect=$(kubectl get secret -n ${VAULT_NS} -o name | grep wildcard | grep -v wildcard.${VAULT_NS})
-    kubectl get ${wildcard_sect} -n ${VAULT_NS} -o jsonpath='{.data.tls\.key}' | base64 -d > ${TMPDIR}/vault.key
-    kubectl get ${wildcard_sect} -n ${VAULT_NS} -o jsonpath='{.data.tls\.crt}' | base64 -d > ${TMPDIR}/vault.crt
-    curl ${SPANETCA_CERT_URL} --output ${TMPDIR}/vault.ca
+    if [[ ${wildcard_sect} != "" ]]
+    then
+        kubectl get ${wildcard_sect} -n ${VAULT_NS} -o jsonpath='{.data.tls\.key}' | base64 -d > ${TMPDIR}/vault.key
+        kubectl get ${wildcard_sect} -n ${VAULT_NS} -o jsonpath='{.data.tls\.crt}' | base64 -d > ${TMPDIR}/vault.crt
+        curl ${SPANETCA_CERT_URL} --output ${TMPDIR}/vault.ca
+    else
+        SERVICE=wildcard
+        CSR_NAME=vault-csr
+        openssl genrsa -out ${TMPDIR}/vault.key 2048
+        cat <<EOF >${TMPDIR}/csr.conf
+[req]
+req_extensions = v3_req
+distinguished_name = req_distinguished_name
+[req_distinguished_name]
+[ v3_req ]
+basicConstraints = CA:FALSE
+keyUsage = nonRepudiation, digitalSignature, keyEncipherment
+extendedKeyUsage = serverAuth
+subjectAltName = @alt_names
+[alt_names]
+DNS.1 = ${SERVICE}
+DNS.2 = ${SERVICE}.${VAULT_NS}
+DNS.3 = ${SERVICE}.${VAULT_NS}.svc
+DNS.4 = ${SERVICE}.${VAULT_NS}.svc.cluster.local
+IP.1 = 127.0.0.1
+EOF
+        openssl req -new -key ${TMPDIR}/vault.key -subj "/CN=${SERVICE}.${VAULT_NS}.svc" -out ${TMPDIR}/server.csr -config ${TMPDIR}/csr.conf
+        cat <<EOF >${TMPDIR}/csr.yaml
+apiVersion: certificates.k8s.io/v1beta1
+kind: CertificateSigningRequest
+metadata:
+  name: ${CSR_NAME}
+spec:
+  groups:
+  - system:authenticated
+  request: $(cat ${TMPDIR}/server.csr | base64 | tr -d '\n')
+  usages:
+  - digital signature
+  - key encipherment
+  - server auth
+EOF
+        kubectl create -f ${TMPDIR}/csr.yaml
+        kubectl certificate approve ${CSR_NAME}
+        serverCert=$(kubectl get csr ${CSR_NAME} -o jsonpath='{.status.certificate}')
+        echo "${serverCert}" | openssl base64 -d -A -out ${TMPDIR}/vault.crt
+        kubectl config view --raw --minify --flatten -o jsonpath='{.clusters[].cluster.certificate-authority-data}' | base64 -d > ${TMPDIR}/vault.ca
+
+    fi
     echo "===>Store the key, cert, and SAPNet_CA into Kubernetes secret ${SECRET_NAME}."
     kubectl create secret generic ${SECRET_NAME} --namespace ${VAULT_NS} --from-file=vault.key=${TMPDIR}/vault.key \
         --from-file=vault.crt=${TMPDIR}/vault.crt --from-file=vault.ca=${TMPDIR}/vault.ca
@@ -88,10 +142,10 @@ generate_consul_acl_token_for_vault()
 {
     echo "===>Get the consul's bootstrap token from k8s"
     bootstrap_token=$(kubectl get secret ${CONSUL_RELEASE}-consul-bootstrap-acl-token -n ${CONSUL_NS} -o jsonpath='{.data.token}' | base64 -d)
-    consul_server_pod=$(kubectl get pods -n ${CONSUL_NS} -l release=${CONSUL_RELEASE},component=server --field-selector status.phase=Running -o jsonpath='{.items[0].metadata.name}')
+    consul_server_pod=$(kubectl get pods -n ${CONSUL_NS} -l 'release in (consulcks-agent, consul),component=server' --field-selector status.phase=Running -o jsonpath='{.items[0].metadata.name}')
 
     echo "===>Create the acl policy for vault in consul server pod ${consul_server_pod}"
-    kubectl cp -n ${CONSUL_NS} vault-acl-policy.hcl ${consul_server_pod}:/tmp/vault-acl-policy.hcl
+    kubectl cp -n ${CONSUL_NS} templates/vault-acl-policy.hcl ${consul_server_pod}:/tmp/vault-acl-policy.hcl
     kubectl exec ${consul_server_pod} -n ${CONSUL_NS} -- sh -c "export CONSUL_HTTP_TOKEN=${bootstrap_token}; consul acl policy create -name vault-acl -rules @/tmp/vault-acl-policy.hcl"
 
     echo "===>Create the token with the policy created above for vault."
@@ -109,6 +163,18 @@ generate_consul_acl_token_for_vault()
         sed "s/<CONSUL_ACL_TOKEN>/${token}/" ${VAULT_VALUES_FILE} > /tmp/${VAULT_VALUES_FILE}.$$
     fi
 
+}
+
+get_consul_acl_token_from_azure_keyvault()
+{
+    tenant_id=$(echo NDJmNzY3NmMtZjQ1NS00MjNjLTgyZjYtZGMyZDk5NzkxYWY3Cg== | base64 -d)
+    client_sec=$(echo cG1ISWZTbURqYUs4bXNXUWNjbGRpazBGMHpsSHVkTU9qRlZlbjg4TU9jYz0K | base64 -d)
+    client_id=$(echo MGZlMTkzZWEtNzZmZS00ZTlmLWI3N2MtNGJhNTlmY2M1OTM4Cg== | base64 -d)
+    secret_name=$1
+    bearer_token=$(curl -X POST https://login.microsoftonline.com/${tenant_id}/oauth2/token -d "grant_type=client_credentials&client_id=${client_id}&client_secret=${client_sec}&resource=https://vault.azure.net" --insecure | jq '.access_token' | tr -d \")
+    secret_version=$(curl -X GET "https://consulopensslvault.vault.azure.net/secrets/${secret_name}/versions?maxresults=1&api-version=7.0" -H "Authorization: Bearer ${bearer_token}" -H 'Content-Type: application/json' --insecure | jq '.value[0].id' | tr -d \")
+    token=$(curl -X GET "${secret_version}?api-version=7.0" -H "Authorization: Bearer ${bearer_token}" -H 'Content-Type: application/json' --insecure | jq '.value' | tr -d \")
+    sed "s/<CONSUL_ACL_TOKEN>/${token}/" ${VAULT_VALUES_FILE} > /tmp/${VAULT_VALUES_FILE}.$$
 }
 
 update_vault_services_annotations()
@@ -192,8 +258,8 @@ create_admin_and_provisioner_token()
     root_token=$(jq ".root_token" ${INIT_TOKEN_FILE} | tr -d  \")
     admin_token_json=/tmp/vault_admin_token_$$.json
     provisioner_token_json=/tmp/vault_provisioner_token_$$.json
-    kubectl cp -n ${VAULT_NS} admin-policy.hcl ${vault_server}:/tmp/admin-policy.hcl
-    kubectl cp -n ${VAULT_NS} provisioner-policy.hcl ${vault_server}:/tmp/provisioner-policy.hcl
+    kubectl cp -n ${VAULT_NS} templates/admin-policy.hcl ${vault_server}:/tmp/admin-policy.hcl
+    kubectl cp -n ${VAULT_NS} templates/provisioner-policy.hcl ${vault_server}:/tmp/provisioner-policy.hcl
     kubectl exec -n ${VAULT_NS} ${vault_server} -- sh -c "export VAULT_TOKEN=${root_token}; vault policy write -tls-skip-verify admin /tmp/admin-policy.hcl; vault policy write -tls-skip-verify provisioner /tmp/provisioner-policy.hcl"
     kubectl exec -n ${VAULT_NS} ${vault_server} -- sh -c "export VAULT_TOKEN=${root_token}; vault token create -tls-skip-verify -policy=admin -format=json 2> /dev/null" > ${admin_token_json}
     kubectl exec -n ${VAULT_NS} ${vault_server} -- sh -c "export VAULT_TOKEN=${root_token}; vault token create -tls-skip-verify -policy=provisioner -format=json 2> /dev/null" > ${provisioner_token_json}
@@ -207,8 +273,8 @@ create_admin_and_provisioner_token()
     idl_vault_crud_policy_name="idl-vault-secrets-crud"
     default_max_ttl_vault_config="8760h"
     idl_vault_admin_token_json=/tmp/idl_vault_admin_token_$$.json
-    kubectl cp -n ${VAULT_NS} ${idl_vault_admin_policy_name}.hcl ${vault_server}:/tmp/${idl_vault_admin_policy_name}.hcl
-    kubectl cp -n ${VAULT_NS} ${idl_vault_crud_policy_name}.hcl ${vault_server}:/tmp/${idl_vault_crud_policy_name}.hcl
+    kubectl cp -n ${VAULT_NS} templates/${idl_vault_admin_policy_name}.hcl ${vault_server}:/tmp/${idl_vault_admin_policy_name}.hcl
+    kubectl cp -n ${VAULT_NS} templates/${idl_vault_crud_policy_name}.hcl ${vault_server}:/tmp/${idl_vault_crud_policy_name}.hcl
     kubectl exec -n ${VAULT_NS} ${vault_server} -- sh -c "export VAULT_TOKEN=${root_token}; vault policy write -tls-skip-verify ${idl_vault_admin_policy_name} /tmp/${idl_vault_admin_policy_name}.hcl; vault policy write -tls-skip-verify ${idl_vault_crud_policy_name} /tmp/${idl_vault_crud_policy_name}.hcl"
     kubectl exec -n ${VAULT_NS} ${vault_server} -- sh -c "export VAULT_TOKEN=${root_token}; vault token create -tls-skip-verify -policy=${idl_vault_admin_policy_name} -period=${default_max_ttl_vault_config} -format=json 2> /dev/null" > ${idl_vault_admin_token_json}
     idl_vault_admin_token=$(jq '.auth.client_token' ${idl_vault_admin_token_json} | tr -d \")
@@ -231,11 +297,11 @@ CONSUL_RELEASE=consul
 VAULT_NS=vault
 VAULT_RELEASE=vault
 INIT_TOKEN_FILE=/tmp/init_token_$$.json
-VAULT_VALUES_FILE=helm-vault-values.yaml
+DC=""
 VAULT_HELM_GITURL=https://github.com/hashicorp/vault-helm.git
 VAULT_HELM_VER=v0.3.3
 SPANETCA_CERT_URL=http://aia.pki.co.sap.com/aia/SAPNetCA_G2.crt
-while getopts :n:r: opt
+while getopts :n:r:d:e: opt
 do
     case "$opt" in
         n)
@@ -243,6 +309,27 @@ do
             ;;
         r)
             CONSUL_RELEASE=$OPTARG
+            ;;
+        d)
+            DC=$(echo ${OPTARG} | tr a-z A-Z)
+            if [[ ! ${DC} =~ ^DC[0-9]{1,3}$ ]]
+            then
+                echo "Invalid value for option -d, please pass the value with format, such as dc8, dc47."
+                exit 2
+            fi
+            ;;
+        e)
+            ENVIRONMENT=$(echo ${OPTARG} | tr a-z A-Z)
+            if [[ ${ENVIRONMENT} = "ENG" ]]
+            then
+                VAULT_VALUES_FILE=templates/helm-vault-values-eng.yaml
+            elif [[ ${ENVIRONMENT} = "QA" || ${ENVIRONMENT} = "PREVIEW" || ${ENVIRONMENT} = "PROD" ]]
+            then
+                VAULT_VALUES_FILE=templates/helm-vault-values.yaml
+            else
+                echo "Invalid argument for option -e: $OPTARG"
+                exit 2
+            fi
             ;;
         ?)
             echo "Invalid option: -$OPTARG"
@@ -252,10 +339,16 @@ do
 done
 
 check_consul_setup
-check_vault_namespace
+#check_vault_namespace
 create_k8s_secret_for_consul_storage_tls
 create_k8s_secret_for_vault_tls
-generate_consul_acl_token_for_vault
+if [[ ${ENVIRONMENT} = "ENG" ]]
+then
+    generate_consul_acl_token_for_vault
+else
+    get_consul_acl_token_from_azure_keyvault ${DC}"-write-acl-token"
+
+fi
 update_vault_services_annotations
 install_vault_helm_chart
 unseal_vault_cluster
