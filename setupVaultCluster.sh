@@ -91,6 +91,7 @@ create_k8s_secret_for_vault_tls()
         kubectl get ${wildcard_sect} -n ${VAULT_NS} -o jsonpath='{.data.tls\.crt}' | base64 -d > ${TMPDIR}/vault.crt
         curl ${SPANETCA_CERT_URL} --output ${TMPDIR}/vault.ca
     else
+        # Use self signed certificate if the wildcard tls secrets not exist.
         SERVICE=wildcard
         CSR_NAME=vault-csr
         openssl genrsa -out ${TMPDIR}/vault.key 2048
@@ -160,7 +161,7 @@ generate_consul_acl_token_for_vault()
         echo "Failed to create consul ACL token for vault! Exit..."
         exit 1
     else
-        sed "s/<CONSUL_ACL_TOKEN>/${token}/" ${VAULT_VALUES_FILE} > /tmp/${VAULT_VALUES_FILE}.$$
+        sed "s/<CONSUL_ACL_TOKEN>/${token}/" templates/${VAULT_VALUES_FILE} > /tmp/${VAULT_VALUES_FILE}.$$
     fi
 
 }
@@ -174,7 +175,7 @@ get_consul_acl_token_from_azure_keyvault()
     bearer_token=$(curl -X POST https://login.microsoftonline.com/${tenant_id}/oauth2/token -d "grant_type=client_credentials&client_id=${client_id}&client_secret=${client_sec}&resource=https://vault.azure.net" --insecure | jq '.access_token' | tr -d \")
     secret_version=$(curl -X GET "https://consulopensslvault.vault.azure.net/secrets/${secret_name}/versions?maxresults=1&api-version=7.0" -H "Authorization: Bearer ${bearer_token}" -H 'Content-Type: application/json' --insecure | jq '.value[0].id' | tr -d \")
     token=$(curl -X GET "${secret_version}?api-version=7.0" -H "Authorization: Bearer ${bearer_token}" -H 'Content-Type: application/json' --insecure | jq '.value' | tr -d \")
-    sed "s/<CONSUL_ACL_TOKEN>/${token}/" ${VAULT_VALUES_FILE} > /tmp/${VAULT_VALUES_FILE}.$$
+    sed "s/<CONSUL_ACL_TOKEN>/${token}/" templates/${VAULT_VALUES_FILE} > /tmp/${VAULT_VALUES_FILE}.$$
 }
 
 update_vault_services_annotations()
@@ -322,10 +323,10 @@ do
             ENVIRONMENT=$(echo ${OPTARG} | tr a-z A-Z)
             if [[ ${ENVIRONMENT} = "ENG" ]]
             then
-                VAULT_VALUES_FILE=templates/helm-vault-values-eng.yaml
+                VAULT_VALUES_FILE=helm-vault-values-eng.yaml
             elif [[ ${ENVIRONMENT} = "QA" || ${ENVIRONMENT} = "PREVIEW" || ${ENVIRONMENT} = "PROD" ]]
             then
-                VAULT_VALUES_FILE=templates/helm-vault-values.yaml
+                VAULT_VALUES_FILE=helm-vault-values.yaml
             else
                 echo "Invalid argument for option -e: $OPTARG"
                 exit 2
