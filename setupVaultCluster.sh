@@ -288,7 +288,7 @@ create_admin_and_provisioner_token()
         idl_vault_admin_token_json=/tmp/idl_vault_admin_token_$$.json
 
         kubectl cp -n ${VAULT_NS} ${parent_dir}/${idl_vault_admin_dir}/config/${idl_vault_admin_policy_name}.hcl ${vault_server}:/tmp/${idl_vault_admin_policy_name}.hcl
-        kubectl cp -n ${VAULT_NS} ${parent_dir}/${idl_vault_admin_dir}/config/${idl_vault_crud_policy_name}.hcl ${idl_vault_crud_policy_name}.hcl
+        kubectl cp -n ${VAULT_NS} ${parent_dir}/${idl_vault_admin_dir}/config/${idl_vault_crud_policy_name}.hcl ${vault_server}:/tmp/${idl_vault_crud_policy_name}.hcl
         kubectl cp -n ${VAULT_NS} ${parent_dir}/${idl_vault_admin_dir}/config/delta.sh ${vault_server}:/tmp/
         kubectl exec -n ${VAULT_NS} ${vault_server} -- sh -c "export VAULT_TOKEN=${root_token}; vault policy write -tls-skip-verify ${idl_vault_admin_policy_name} /tmp/${idl_vault_admin_policy_name}.hcl; vault policy write -tls-skip-verify ${idl_vault_crud_policy_name} /tmp/${idl_vault_crud_policy_name}.hcl"
         kubectl exec -n ${VAULT_NS} ${vault_server} -- sh -c "export VAULT_TOKEN=${root_token}; vault token create -tls-skip-verify -policy=${idl_vault_admin_policy_name} -period=${default_max_ttl_vault_config} -format=json 2> /dev/null" > ${idl_vault_admin_token_json}
