@@ -375,11 +375,11 @@ create_k8s_secret_for_vault_tls
 if [[ ${ENVIRONMENT} = "ENG" ]]
 then
     generate_consul_acl_token_for_vault
+    update_vault_services_annotations
 else
     get_consul_acl_token_from_azure_keyvault ${DC}"-write-acl-token"
 
 fi
-update_vault_services_annotations
 install_vault_helm_chart
 unseal_vault_cluster
 create_admin_and_provisioner_token
