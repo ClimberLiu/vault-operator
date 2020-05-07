@@ -159,17 +159,6 @@ generate_consul_acl_token_for_vault()
 
 }
 
-get_consul_acl_token_from_azure_keyvault()
-{
-    tenant_id=$(echo NDJmNzY3NmMtZjQ1NS00MjNjLTgyZjYtZGMyZDk5NzkxYWY3Cg== | base64 -d)
-    client_sec=$(echo cG1ISWZTbURqYUs4bXNXUWNjbGRpazBGMHpsSHVkTU9qRlZlbjg4TU9jYz0K | base64 -d)
-    client_id=$(echo MGZlMTkzZWEtNzZmZS00ZTlmLWI3N2MtNGJhNTlmY2M1OTM4Cg== | base64 -d)
-    secret_name=$1
-    bearer_token=$(curl -X POST https://login.microsoftonline.com/${tenant_id}/oauth2/token -d "grant_type=client_credentials&client_id=${client_id}&client_secret=${client_sec}&resource=https://vault.azure.net" --insecure | jq '.access_token' | tr -d \")
-    secret_version=$(curl -X GET "https://consulopensslvault.vault.azure.net/secrets/${secret_name}/versions?maxresults=1&api-version=7.0" -H "Authorization: Bearer ${bearer_token}" -H 'Content-Type: application/json' --insecure | jq '.value[0].id' | tr -d \")
-    token=$(curl -X GET "${secret_version}?api-version=7.0" -H "Authorization: Bearer ${bearer_token}" -H 'Content-Type: application/json' --insecure | jq '.value' | tr -d \")
-    sed "s/<CONSUL_ACL_TOKEN>/${token}/" templates/${VAULT_VALUES_FILE} > /tmp/${VAULT_VALUES_FILE}.$$
-}
 
 update_vault_services_annotations()
 {
@@ -333,14 +322,8 @@ check_consul_setup
 check_vault_namespace
 create_k8s_secret_for_consul_storage_tls
 create_k8s_secret_for_vault_tls
-if [[ ${ENVIRONMENT} = "ENG" ]]
-then
-    generate_consul_acl_token_for_vault
-    update_vault_services_annotations
-else
-    get_consul_acl_token_from_azure_keyvault ${DC}"-write-acl-token"
-
-fi
+generate_consul_acl_token_for_vault
+update_vault_services_annotations
 install_vault_helm_chart
 unseal_vault_cluster
 create_admin_and_provisioner_token
