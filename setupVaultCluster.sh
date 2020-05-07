@@ -84,19 +84,12 @@ create_k8s_secret_for_vault_tls()
     SECRET_NAME=vault-server-tls
     TMPDIR=/tmp
 
-    # for the ENG env, use the wildcard tls secrets created during the namespace creation by the jenkins job generic-k8s-environment-create
-    wildcard_sect=$(kubectl get secret -n ${VAULT_NS} -o name | grep wildcard | grep -v wildcard.${VAULT_NS})
-    if [[ ${wildcard_sect} != "" ]]
-    then
-        kubectl get ${wildcard_sect} -n ${VAULT_NS} -o jsonpath='{.data.tls\.key}' | base64 -d > ${TMPDIR}/vault.key
-        kubectl get ${wildcard_sect} -n ${VAULT_NS} -o jsonpath='{.data.tls\.crt}' | base64 -d > ${TMPDIR}/vault.crt
-        curl ${SPANETCA_CERT_URL} --output ${TMPDIR}/vault.ca
-    else
-        # Use self signed certificate if the wildcard tls secrets not exist.
-        SERVICE=wildcard
-        CSR_NAME=vault-csr
-        openssl genrsa -out ${TMPDIR}/vault.key 2048
-        cat <<EOF >${TMPDIR}/csr.conf
+
+    # Use self signed certificate if the wildcard tls secrets not exist.
+    SERVICE=wildcard
+    CSR_NAME=vault-csr
+    openssl genrsa -out ${TMPDIR}/vault.key 2048
+    cat <<EOF >${TMPDIR}/csr.conf
 [req]
 req_extensions = v3_req
 distinguished_name = req_distinguished_name
@@ -113,28 +106,27 @@ DNS.3 = ${SERVICE}.${VAULT_NS}.svc
 DNS.4 = ${SERVICE}.${VAULT_NS}.svc.cluster.local
 IP.1 = 127.0.0.1
 EOF
-        openssl req -new -key ${TMPDIR}/vault.key -subj "/CN=${SERVICE}.${VAULT_NS}.svc" -out ${TMPDIR}/server.csr -config ${TMPDIR}/csr.conf
-        cat <<EOF >${TMPDIR}/csr.yaml
+    openssl req -new -key ${TMPDIR}/vault.key -subj "/CN=${SERVICE}.${VAULT_NS}.svc" -out ${TMPDIR}/server.csr -config ${TMPDIR}/csr.conf
+    cat <<EOF >${TMPDIR}/csr.yaml
 apiVersion: certificates.k8s.io/v1beta1
 kind: CertificateSigningRequest
 metadata:
-  name: ${CSR_NAME}
+name: ${CSR_NAME}
 spec:
-  groups:
-  - system:authenticated
-  request: $(cat ${TMPDIR}/server.csr | base64 | tr -d '\n')
-  usages:
-  - digital signature
-  - key encipherment
-  - server auth
+groups:
+- system:authenticated
+request: $(cat ${TMPDIR}/server.csr | base64 | tr -d '\n')
+usages:
+- digital signature
+- key encipherment
+- server auth
 EOF
-        kubectl create -f ${TMPDIR}/csr.yaml
-        kubectl certificate approve ${CSR_NAME}
-        serverCert=$(kubectl get csr ${CSR_NAME} -o jsonpath='{.status.certificate}')
-        echo "${serverCert}" | openssl base64 -d -A -out ${TMPDIR}/vault.crt
-        kubectl config view --raw --minify --flatten -o jsonpath='{.clusters[].cluster.certificate-authority-data}' | base64 -d > ${TMPDIR}/vault.ca
+    kubectl create -f ${TMPDIR}/csr.yaml
+    kubectl certificate approve ${CSR_NAME}
+    serverCert=$(kubectl get csr ${CSR_NAME} -o jsonpath='{.status.certificate}')
+    echo "${serverCert}" | openssl base64 -d -A -out ${TMPDIR}/vault.crt
+    kubectl config view --raw --minify --flatten -o jsonpath='{.clusters[].cluster.certificate-authority-data}' | base64 -d > ${TMPDIR}/vault.ca
 
-    fi
     echo "===>Store the key, cert, and SAPNet_CA into Kubernetes secret ${SECRET_NAME}."
     kubectl create secret generic ${SECRET_NAME} --namespace ${VAULT_NS} --from-file=vault.key=${TMPDIR}/vault.key \
         --from-file=vault.crt=${TMPDIR}/vault.crt --from-file=vault.ca=${TMPDIR}/vault.ca
@@ -270,35 +262,6 @@ create_admin_and_provisioner_token()
     kubectl create secret generic vault-admin-token --from-literal=token=${admin_token} -n ${VAULT_NS}
     kubectl create secret generic vault-provisioner-token --from-literal=token=${provisioner_token} -n ${VAULT_NS}
 
-    # get idl-vault-admin token related policies
-    idl_vault_admin_dir=hashicorp-vault-local-setup
-    if [[ ! -d ../${idl_vault_admin_dir} ]]
-    then
-        current_dir=$(pwd)
-        parent_dir=$(dirname ${current_dir})
-        git clone ${IDL_VAULT_ADMIN_GITURL} ${parent_dir}/${idl_vault_admin_dir}
-    fi
-
-    if [[ -d ../${idl_vault_admin_dir} ]]
-    then
-        current_dir=$(pwd)
-        parent_dir=$(dirname ${current_dir})
-        idl_vault_admin_policy_name="idl-vault-admin"
-        idl_vault_crud_policy_name="idl-vault-secrets-crud"
-        default_max_ttl_vault_config="8760h"
-        idl_vault_admin_token_json=/tmp/idl_vault_admin_token_$$.json
-
-        kubectl cp -n ${VAULT_NS} ${parent_dir}/${idl_vault_admin_dir}/config ${vault_server}:/tmp/config
-        kubectl exec -n ${VAULT_NS} ${vault_server} -- sh -c "export VAULT_TOKEN=${root_token}; vault policy write -tls-skip-verify ${idl_vault_admin_policy_name} /tmp/config/${idl_vault_admin_policy_name}.hcl; vault policy write -tls-skip-verify ${idl_vault_crud_policy_name} /tmp/config/${idl_vault_crud_policy_name}.hcl"
-        kubectl exec -n ${VAULT_NS} ${vault_server} -- sh -c "export VAULT_TOKEN=${root_token}; vault token create -tls-skip-verify -policy=${idl_vault_admin_policy_name} -period=${default_max_ttl_vault_config} -format=json 2> /dev/null" > ${idl_vault_admin_token_json}
-        kubectl exec -n ${VAULT_NS} ${vault_server} -- sh -c "export VAULT_TOKEN=${root_token} VAULT_SKIP_VERIFY=true; cd /tmp/config/ && sh delta.sh"
-        idl_vault_admin_token=$(jq '.auth.client_token' ${idl_vault_admin_token_json} | tr -d \")
-        kubectl create secret generic idl-vault-admin-token --from-literal=token=${idl_vault_admin_token} -n ${VAULT_NS}
-    else
-        echo "!!!The idl-vault-admin hcl related git repo is not exist in ../${idl_vault_admin_dir}"
-        exit 1
-    fi
-
     kubectl exec -n ${VAULT_NS} ${vault_server} -- sh -c "export VAULT_TOKEN=${root_token}; vault secrets enable -tls-skip-verify -path=secret kv-v2"
 }
 
@@ -320,8 +283,6 @@ INIT_TOKEN_FILE=/tmp/init_token_$$.json
 DC=""
 VAULT_HELM_GITURL=https://github.com/hashicorp/vault-helm.git
 VAULT_HELM_VER=v0.3.3
-SPANETCA_CERT_URL=http://aia.pki.co.sap.com/aia/SAPNetCA_G2.crt
-IDL_VAULT_ADMIN_GITURL=https://github.wdf.sap.corp/sfsf-platform-core/hashicorp-vault-local-setup.git
 eflag=0
 while getopts :n:r:d:e: opt
 do
