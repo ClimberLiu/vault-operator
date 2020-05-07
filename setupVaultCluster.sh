@@ -80,7 +80,6 @@ check_vault_namespace()
 
 create_k8s_secret_for_vault_tls()
 {
-    # Create and Store key, cert and SAPNet_CA in kubernetes secrets store for Vault cluster with TLS
     SECRET_NAME=vault-server-tls
     TMPDIR=/tmp
 
@@ -127,7 +126,7 @@ EOF
     echo "${serverCert}" | openssl base64 -d -A -out ${TMPDIR}/vault.crt
     kubectl config view --raw --minify --flatten -o jsonpath='{.clusters[].cluster.certificate-authority-data}' | base64 -d > ${TMPDIR}/vault.ca
 
-    echo "===>Store the key, cert, and SAPNet_CA into Kubernetes secret ${SECRET_NAME}."
+    echo "===>Store the key, cert, and CA into Kubernetes secret ${SECRET_NAME}."
     kubectl create secret generic ${SECRET_NAME} --namespace ${VAULT_NS} --from-file=vault.key=${TMPDIR}/vault.key \
         --from-file=vault.crt=${TMPDIR}/vault.crt --from-file=vault.ca=${TMPDIR}/vault.ca
 }
