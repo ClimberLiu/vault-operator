@@ -73,7 +73,7 @@ check_vault_namespace()
     then
         echo "===>The vault namespace ${VAULT_NS} is there, continue..."
     else
-        echo "The vault namespace ${VAULT_NS} is not exist, please use jenkins job https://saas-manager.mo.sap.corp/job/generic-k8s-environment-create/ to create it first."
+        echo "The vault namespace ${VAULT_NS} is not exist, please to create it first."
         exit 1
     fi
 }
